@@ -1,9 +1,10 @@
+        
 name: Compilar APK do SINAL
 
 on:
   push:
     branches: [ main, master ]
-  workflow_dispatch: # Permite compilar com 1 clique pelo botão "Run workflow" no celular
+  workflow_dispatch:
 
 jobs:
   build:
@@ -13,27 +14,26 @@ jobs:
       - name: Baixar código do repositório
         uses: actions/checkout@v4
 
-      - name: Configurar Java 17 Oficial
+      - name: Configurar Java 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Configurar Android SDK e Ferramentas
-        uses: android-actions/setup-android@v3
+      - name: Configurar Gradle automaticamente
+        uses: gradle/actions/setup-gradle@v3
 
-      - name: Dar permissão de execução ao Gradle
-        run: chmod +x ./gradlew || true
-
-      - name: Compilar APK Debug
+      - name: Instalar Gradle Wrapper se não existir
         run: |
-          if [ -f "./gradlew" ]; then
-            ./gradlew assembleDebug --stacktrace
-          else
-            gradle assembleDebug --stacktrace
+          if [ ! -f "./gradlew" ]; then
+            gradle wrapper --gradle-version 8.2
+            chmod +x ./gradlew
           fi
 
-      - name: Salvar APK gerado para Download no Celular
+      - name: Compilar APK Debug
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Salvar APK para Download
         uses: actions/upload-artifact@v4
         with:
           name: SINAL-MVP-debug-apk
