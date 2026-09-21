@@ -19,13 +19,14 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Configurar Android SDK e Licenças
-        uses: android-actions/setup-android@v3
+      - name: Aceitar Licenças do Android SDK Nativo
+        run: |
+          yes | sdkmanager --licenses || true
 
       - name: Configurar Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Instalar Gradle Wrapper Oficial 8.4
+      - name: Gerar Gradle Wrapper 8.4
         run: |
           gradle wrapper --gradle-version 8.4 --distribution-type bin
           chmod +x ./gradlew
