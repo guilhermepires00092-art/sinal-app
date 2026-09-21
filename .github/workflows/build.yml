@@ -22,14 +22,85 @@ jobs:
       - name: Configurar Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Gerar Wrapper e Verificar Projeto
+      - name: Estruturar e Corrigir Projeto Android
         run: |
+          # 1. Garantir gradle.properties
+          cat << 'EOF' > gradle.properties
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          EOF
+
+          # 2. Garantir settings.gradle.kts correto
+          cat << 'EOF' > settings.gradle.kts
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "SinalApp"
+          include(":app")
+          EOF
+
+          # 3. Garantir build.gradle raiz
+          cat << 'EOF' > build.gradle.kts
+          plugins {
+              id("com.android.application") version "8.2.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.22" apply false
+          }
+          EOF
+
+          # 4. Garantir app/build.gradle.kts correto
+          mkdir -p app
+          cat << 'EOF' > app/build.gradle.kts
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.sinal.app"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.sinal.app"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "0.1.0-mvp"
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+
+          dependencies {
+              implementation("androidx.core:core-ktx:1.12.0")
+              implementation("androidx.appcompat:appcompat:1.6.1")
+              implementation("com.google.android.material:material:1.11.0")
+          }
+          EOF
+
+          # 5. Gerar wrapper oficial 8.4
           gradle wrapper --gradle-version 8.4 --distribution-type bin
           chmod +x ./gradlew
-          ls -la
-          ls -la app || true
 
-      - name: Compilar APK Debug
+      - name: Compilar APK Debug Oficial
         run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
 
       - name: Salvar APK para Download
