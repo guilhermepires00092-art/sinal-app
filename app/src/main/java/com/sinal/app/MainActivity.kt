@@ -13,13 +13,10 @@ import android.os.ParcelUuid
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.view.Gravity
-import android.view.View
-import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.TextView
-import android.widget.Toast
+import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
+import java.nio.charset.StandardCharsets
 import java.util.UUID
 
 class MainActivity : AppCompatActivity() {
@@ -30,15 +27,17 @@ class MainActivity : AppCompatActivity() {
     private var bleScanner: BluetoothLeScanner? = null
     private var bleAdvertiser: BluetoothLeAdvertiser? = null
 
-    private lateinit var radarCircle: LinearLayout
-    private lateinit var radarPulseText: TextView
-    private lateinit var distanceText: TextView
     private lateinit var statusBadge: TextView
-    private lateinit var btnToggle: Button
+    private lateinit var radarCircle: LinearLayout
+    private lateinit var radarDistanceText: TextView
+    private lateinit var radarUserText: TextView
+    private lateinit var btnToggleRadar: Button
     private lateinit var btnSimulate: Button
+    private lateinit var nameInput: EditText
+    private lateinit var premiumAlertCard: LinearLayout
 
-    private var isScanning = false
-    private var simulatedDistance = 10
+    private var isRadarActive = false
+    private var simulatedMeters = 8
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -46,78 +45,126 @@ class MainActivity : AppCompatActivity() {
         val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         bluetoothAdapter = bluetoothManager.adapter
 
-        // Layout Principal - Tema Escuro Imersivo
+        // Layout Raiz - Tema Escuro Tecnológico
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            setBackgroundColor(Color.parseColor("#090D16"))
-            setPadding(48, 64, 48, 48)
+            setBackgroundColor(Color.parseColor("#080C14"))
+            setPadding(48, 56, 48, 48)
         }
 
-        val appTitle = TextView(this).apply {
-            text = "S I N A L"
-            textSize = 24f
+        val appLogo = TextView(this).apply {
+            text = "⚡ S I N A L"
+            textSize = 26f
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
-            setPadding(0, 0, 0, 8)
+            setPadding(0, 0, 0, 4)
         }
 
         statusBadge = TextView(this).apply {
-            text = "● RADAR EM ESPERA"
+            text = "● RADAR DESLIGADO"
             textSize = 12f
             setTextColor(Color.parseColor("#64748B"))
             gravity = Gravity.CENTER
-            setPadding(0, 0, 0, 48)
+            setPadding(0, 0, 0, 24)
         }
 
-        // Radar Central Estilo Love Alarm
+        // Campo para Nome do Usuário
+        nameInput = EditText(this).apply {
+            hint = "Seu Nome ou Apelido"
+            setHintTextColor(Color.parseColor("#475569"))
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#131B2E"))
+            setPadding(32, 24, 32, 24)
+            setText("Lucas")
+            val params = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 0, 0, 32) }
+            layoutParams = params
+        }
+
+        // Radar Central Interativo
         radarCircle = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setBackgroundColor(Color.parseColor("#131B2E"))
+            setBackgroundColor(Color.parseColor("#0F172A"))
             val size = 520
             layoutParams = LinearLayout.LayoutParams(size, size).apply {
-                setMargins(0, 32, 0, 48)
+                setMargins(0, 16, 0, 32)
             }
         }
 
-        radarPulseText = TextView(this).apply {
-            text = "⚡"
-            textSize = 48f
-            gravity = Gravity.CENTER
-        }
-
-        distanceText = TextView(this).apply {
-            text = "Nenhum sinal"
-            textSize = 18f
+        radarUserText = TextView(this).apply {
+            text = "Sintonize seu Radar"
+            textSize = 15f
             setTextColor(Color.parseColor("#94A3B8"))
             gravity = Gravity.CENTER
-            setPadding(0, 16, 0, 0)
         }
 
-        radarCircle.addView(radarPulseText)
-        radarCircle.addView(distanceText)
+        radarDistanceText = TextView(this).apply {
+            text = "Raio de 10m"
+            textSize = 22f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            setPadding(0, 8, 0, 0)
+        }
 
-        // Botão Principal de Ativação
-        btnToggle = Button(this).apply {
+        radarCircle.addView(radarUserText)
+        radarCircle.addView(radarDistanceText)
+
+        // Card de Alerta de Sinal / Notificação de Curtida (Regra Black Mirror / Proteção)
+        premiumAlertCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#1E1B4B"))
+            setPadding(32, 24, 32, 24)
+            visibility = LinearLayout.GONE
+            val params = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 0, 0, 24) }
+            layoutParams = params
+        }
+
+        val alertTitle = TextView(this).apply {
+            text = "🔥 Alguém a 3m curtiu você!"
+            textSize = 15f
+            setTextColor(Color.parseColor("#A5B4FC"))
+        }
+
+        val btnUnlock = Button(this).apply {
+            text = "DESBLOQUEAR FOTO DE QUEM TE CURTIU (PREMIUM)"
+            setBackgroundColor(Color.parseColor("#6366F1"))
+            setTextColor(Color.WHITE)
+            textSize = 12f
+            setPadding(16, 16, 16, 16)
+            setOnClickListener {
+                Toast.makeText(this@MainActivity, "✨ Recurso Premium: Revelando perfil...", Toast.LENGTH_LONG).show()
+            }
+        }
+        premiumAlertCard.addView(alertTitle)
+        premiumAlertCard.addView(btnUnlock)
+
+        // Botão Principal de Ligar o Radar
+        btnToggleRadar = Button(this).apply {
             text = "ATIVAR SINAL NO LOCAL"
-            setBackgroundColor(Color.parseColor("#F43F5E"))
+            setBackgroundColor(Color.parseColor("#E11D48"))
             setTextColor(Color.WHITE)
             textSize = 15f
             setPadding(32, 24, 32, 24)
             val params = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { setMargins(0, 16, 0, 16) }
+            ).apply { setMargins(0, 8, 0, 16) }
             layoutParams = params
             setOnClickListener {
-                if (!isScanning) startSinalRadar() else stopSinalRadar()
+                if (!isRadarActive) startRadar() else stopRadar()
             }
         }
 
-        // Botão de Simulação (Para testar com apenas 1 celular!)
+        // Botão de Simulação (Para testar no seu aparelho sozinho na empresa)
         btnSimulate = Button(this).apply {
-            text = "⚡ SIMULAR APROXIMAÇÃO (-2m)"
+            text = "⚡ SIMULAR ALGUÉM CURTINDO VOCÊ (-2m)"
             setBackgroundColor(Color.parseColor("#1E293B"))
             setTextColor(Color.parseColor("#38BDF8"))
             textSize = 13f
@@ -125,37 +172,41 @@ class MainActivity : AppCompatActivity() {
             val params = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { setMargins(0, 16, 0, 0) }
+            )
             layoutParams = params
             setOnClickListener {
-                simulateSignalDetection()
+                simulatePresence()
             }
         }
 
-        root.addView(appTitle)
+        root.addView(appLogo)
         root.addView(statusBadge)
+        root.addView(nameInput)
         root.addView(radarCircle)
-        root.addView(btnToggle)
+        root.addView(premiumAlertCard)
+        root.addView(btnToggleRadar)
         root.addView(btnSimulate)
 
         setContentView(root)
     }
 
-    private fun startSinalRadar() {
-        isScanning = true
-        statusBadge.text = "● TRANSMITINDO SINAL • PROCURANDO"
+    private fun startRadar() {
+        isRadarActive = true
+        statusBadge.text = "● RADAR ATIVO • ESCUTANDO AMBIENTE"
         statusBadge.setTextColor(Color.parseColor("#10B981"))
-        btnToggle.text = "DESATIVAR SINAL"
-        btnToggle.setBackgroundColor(Color.parseColor("#334155"))
-        distanceText.text = "Varrendo raio de 10m..."
-        distanceText.setTextColor(Color.parseColor("#38BDF8"))
+        btnToggleRadar.text = "DESATIVAR RADAR"
+        btnToggleRadar.setBackgroundColor(Color.parseColor("#334155"))
+        radarDistanceText.text = "Escaneando..."
 
-        // Se tiver Bluetooth ligado, ativa o rádio real
+        val userName = nameInput.text.toString().trim().ifEmpty { "Anônimo" }
+        val userBytes = userName.toByteArray(StandardCharsets.UTF_8).take(12).toByteArray()
+
         if (bluetoothAdapter?.isEnabled == true) {
             try {
                 bleScanner = bluetoothAdapter?.bluetoothLeScanner
                 bleAdvertiser = bluetoothAdapter?.bluetoothLeAdvertiser
 
+                // Transmissão de Beacon BLE ultraleve
                 val settings = AdvertiseSettings.Builder()
                     .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
                     .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
@@ -163,72 +214,79 @@ class MainActivity : AppCompatActivity() {
                     .build()
 
                 val data = AdvertiseData.Builder()
-                    .setIncludeDeviceName(false)
                     .addServiceUuid(ParcelUuid(SINAL_UUID))
+                    .addServiceData(ParcelUuid(SINAL_UUID), userBytes)
+                    .setIncludeDeviceName(false)
                     .build()
 
                 bleAdvertiser?.startAdvertising(settings, data, object : AdvertiseCallback() {})
 
+                // Escuta Passiva
                 val scanFilter = ScanFilter.Builder().setServiceUuid(ParcelUuid(SINAL_UUID)).build()
                 val scanSettings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
 
                 bleScanner?.startScan(listOf(scanFilter), scanSettings, object : ScanCallback() {
                     override fun onScanResult(callbackType: Int, result: ScanResult?) {
                         result?.let {
-                            triggerAlarm(it.rssi)
+                            val serviceData = it.scanRecord?.getServiceData(ParcelUuid(SINAL_UUID))
+                            val detectedName = if (serviceData != null) String(serviceData, StandardCharsets.UTF_8) else "Usuário SINAL"
+                            onSignalDetected(detectedName, it.rssi)
                         }
                     }
                 })
             } catch (e: SecurityException) {
-                // Modo protegido
+                // Silencioso
             }
         }
     }
 
-    private fun stopSinalRadar() {
-        isScanning = false
-        statusBadge.text = "● RADAR EM ESPERA"
+    private fun stopRadar() {
+        isRadarActive = false
+        statusBadge.text = "● RADAR DESLIGADO"
         statusBadge.setTextColor(Color.parseColor("#64748B"))
-        btnToggle.text = "ATIVAR SINAL NO LOCAL"
-        btnToggle.setBackgroundColor(Color.parseColor("#F43F5E"))
-        distanceText.text = "Nenhum sinal"
-        distanceText.setTextColor(Color.parseColor("#94A3B8"))
-        radarCircle.setBackgroundColor(Color.parseColor("#131B2E"))
-        simulatedDistance = 10
+        btnToggleRadar.text = "ATIVAR SINAL NO LOCAL"
+        btnToggleRadar.setBackgroundColor(Color.parseColor("#E11D48"))
+        radarCircle.setBackgroundColor(Color.parseColor("#0F172A"))
+        radarUserText.text = "Sintonize seu Radar"
+        radarDistanceText.text = "Raio de 10m"
+        premiumAlertCard.visibility = LinearLayout.GONE
+        simulatedMeters = 8
     }
 
-    private fun simulateSignalDetection() {
-        if (!isScanning) {
-            startSinalRadar()
-        }
-        simulatedDistance -= 2
-        if (simulatedDistance <= 1) {
-            simulatedDistance = 8
-        }
-        val estimatedRssi = -50 - (simulatedDistance * 3)
-        triggerAlarm(estimatedRssi, simulatedDistance)
+    private fun simulatePresence() {
+        if (!isRadarActive) startRadar()
+
+        simulatedMeters -= 2
+        if (simulatedMeters < 1) simulatedMeters = 7
+
+        onSignalDetected("Garota Misteriosa", -50 - (simulatedMeters * 3), simulatedMeters)
     }
 
-    private fun triggerAlarm(rssi: Int, forcedMeters: Int? = null) {
+    private fun onSignalDetected(name: String, rssi: Int, forcedMeters: Int? = null) {
         runOnUiThread {
-            // Vibra o celular com pulso tátil
+            // Vibração tátil no bolso
             val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                vibrator.vibrate(VibrationEffect.createOneShot(120, VibrationEffect.DEFAULT_AMPLITUDE))
+                vibrator.vibrate(VibrationEffect.createOneShot(150, VibrationEffect.DEFAULT_AMPLITUDE))
             } else {
-                vibrator.vibrate(120)
+                vibrator.vibrate(150)
             }
 
             val meters = forcedMeters ?: when {
                 rssi > -60 -> 2
-                rssi > -70 -> 4
-                rssi > -80 -> 7
+                rssi > -72 -> 4
+                rssi > -82 -> 6
                 else -> 9
             }
 
-            distanceText.text = "ALGUÉM A ~$meters METROS DE VOCÊ!"
-            distanceText.setTextColor(Color.parseColor("#F43F5E"))
+            radarUserText.text = "⚡ SINAL DETECTADO: $name"
+            radarUserText.setTextColor(Color.parseColor("#F43F5E"))
+            radarDistanceText.text = "Aprox. $meters metros"
+            radarDistanceText.setTextColor(Color.WHITE)
             radarCircle.setBackgroundColor(Color.parseColor("#3B0715"))
+
+            // Mostra o card de monetização / proteção
+            premiumAlertCard.visibility = LinearLayout.VISIBLE
         }
     }
 }
