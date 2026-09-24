@@ -1,798 +1,861 @@
 package com.sinal.app
 
 import android.Manifest
-import android.animation.AnimatorSet
-import android.animation.ObjectAnimator
-import android.animation.PropertyValuesHolder
-import android.animation.ValueAnimator
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.app.PendingIntent
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.*
 import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.ParcelUuid
 import android.os.VibrationEffect
 import android.os.Vibrator
+import android.os.VibratorManager
+import android.util.Base64
 import android.view.Gravity
 import android.view.View
-import android.view.animation.DecelerateInterpolator
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.ListenerRegistration
+import java.io.ByteArrayOutputStream
+import java.util.UUID
 
+/**
+ * SINAL - Love Alarm da Vida Real
+ * APK Único para Google Play Store:
+ * - Se a conta for brainrot064@gmail.com: Ativa God Mode automaticamente (Aba Moderação, VIP Dono, Radar Mestre).
+ * - Qualquer outro usuário: App comercial 100% puro (Feed, Radar e Upload), sem traços de administração.
+ */
 class MainActivity : AppCompatActivity() {
 
-    private val CHANNEL_ID = "sinal_radar_channel"
-    private val NOTIF_ID = 1001
+    companion object {
+        // E-mail oficial do Criador / Dono do SINAL
+        const val OWNER_EMAIL = "brainrot064@gmail.com"
+        private val SERVICE_UUID_ADULT = UUID.fromString("0000FEAA-0000-1000-8000-00805F9B34FB")
+    }
 
     private var bluetoothAdapter: BluetoothAdapter? = null
-    private var bleScanner: BluetoothLeScanner? = null
-
-    // Contêineres das 3 Abas
-    private lateinit var tabFeed: FrameLayout
-    private lateinit var tabRadar: LinearLayout
-    private lateinit var tabProfile: ScrollView
-
-    // Botões da Barra Inferior
-    private lateinit var btnNavFeed: TextView
-    private lateinit var btnNavRadar: TextView
-    private lateinit var btnNavProfile: TextView
-
-    // Elementos do Radar
-    private lateinit var statusBadge: TextView
-    private lateinit var radarPulseRing: FrameLayout
-    private lateinit var radarCenterCircle: LinearLayout
-    private lateinit var radarDistanceText: TextView
-    private lateinit var radarPresenceSubtext: TextView
-    private lateinit var btnToggleRadar: Button
-    private lateinit var signalsListContainer: LinearLayout
-    private lateinit var expandedPhotoOverlay: FrameLayout
-    private lateinit var expandedPhotoCard: LinearLayout
-    private lateinit var expandedPhotoAvatar: TextView
-    private lateinit var expandedPhotoInfo: TextView
-
-    private var pulseAnimator: ObjectAnimator? = null
     private var isRadarActive = false
-    private var isPremium = true // Modo de demonstração com recurso Premium liberado
+    private var currentTab = 1 // 0: Feed, 1: Radar, 2: Perfil, 3: Moderação (automático)
 
-    // Dados Mockados para o Feed de Fotos Vertical (Estilo TikTok)
-    private val mockFeedProfiles = listOf(
-        Pair("Mariana", "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=500"),
-        Pair("Camila", "https://images.unsplash.com/photo-1517841905240-472988babdf9?w=500"),
-        Pair("Juliana", "https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=500"),
-        Pair("Beatriz", "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=500")
+    // Identificação do Usuário e God Mode Automático
+    private var currentUserEmail: String = OWNER_EMAIL
+    private var isGodMode: Boolean = true
+
+    // Firebase Nuvem
+    private val firestore by lazy { FirebaseFirestore.getInstance() }
+    private var feedListener: ListenerRegistration? = null
+    private var modListener: ListenerRegistration? = null
+
+    // Modelo de Fotos em Nuvem
+    data class SinalPhoto(
+        val id: String,
+        val photoBase64: String?,
+        val name: String,
+        val age: Int,
+        var status: String,
+        val isCupid: Boolean = false
     )
+
+    private val approvedSignals = mutableListOf<SinalPhoto>()
+    private val pendingModSignals = mutableListOf<SinalPhoto>()
     private var currentFeedIndex = 0
-    private lateinit var feedPhotoView: FrameLayout
-    private lateinit var feedNameText: TextView
+
+    // Estado da Minha Própria Foto
+    private var myPhotoBitmap: Bitmap? = null
+    private var myPhotoStatus = "SEM FOTO"
+    private val myUserId by lazy {
+        val prefs = getSharedPreferences("sinal_prefs", Context.MODE_PRIVATE)
+        var id = prefs.getString("user_id", null)
+        if (id == null) {
+            id = if (isGodMode) "cupido_dono_oficial" else "usr_" + UUID.randomUUID().toString().substring(0, 8)
+            prefs.edit().putString("user_id", id).apply()
+        }
+        id
+    }
+
+    private lateinit var rootContainer: FrameLayout
+    private lateinit var tabContent: LinearLayout
+    private lateinit var navBar: LinearLayout
+
+    // Seletor Nativo de Foto da Galeria
+    private val pickPhotoLauncher = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        uri?.let { uploadPhotoToCloud(it) }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        createNotificationChannel()
-
         val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         bluetoothAdapter = bluetoothManager.adapter
 
-        // Layout Raiz em Camadas
-        val root = FrameLayout(this).apply {
-            setBackgroundColor(Color.parseColor("#05070B"))
-        }
-
-        // Conteúdo Principal com Espaço para Navegação Inferior
-        val mainContent = FrameLayout(this).apply {
-            val p = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-            p.setMargins(0, 0, 0, 160) // Reserva espaço da barra inferior
-            layoutParams = p
-        }
-
-        // Criação das 3 Telas
-        tabFeed = buildFeedTab()
-        tabRadar = buildRadarTab()
-        tabProfile = buildProfileTab()
-
-        mainContent.addView(tabFeed)
-        mainContent.addView(tabRadar)
-        mainContent.addView(tabProfile)
-
-        // Overlay de Expansão Fluida para o Usuário Premium
-        expandedPhotoOverlay = buildExpandedPhotoOverlay()
-
-        // Barra de Navegação Inferior Estilo Tinder / TikTok
-        val bottomNav = buildBottomNav()
-
-        root.addView(mainContent)
-        root.addView(expandedPhotoOverlay)
-        root.addView(bottomNav)
-
-        setContentView(root)
-
-        // Abre na Aba Principal do Feed
-        switchTab(0)
-    }
-
-    // ==========================================
-    // ABA 1: FEED VERTICAL (Deslize de Fotos + Coração / X)
-    // ==========================================
-    private fun buildFeedTab(): FrameLayout {
-        val frame = FrameLayout(this).apply {
-            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-            setPadding(32, 48, 32, 24)
-        }
-
-        feedPhotoView = FrameLayout(this).apply {
-            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#111827"))
-                cornerRadius = 64f
-                setStroke(3, Color.parseColor("#1F2937"))
-            }
-        }
-
-        // Avatar / Indicador Visual do Perfil Atual
-        val photoPlaceholder = TextView(this).apply {
-            text = "📷"
-            textSize = 70f
-            gravity = Gravity.CENTER
-            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-        }
-
-        feedNameText = TextView(this).apply {
-            text = "Mariana"
-            textSize = 28f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.WHITE)
-            setPadding(48, 0, 0, 200)
-            val p = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-            p.gravity = Gravity.BOTTOM or Gravity.START
-            layoutParams = p
-        }
-
-        val hintText = TextView(this).apply {
-            text = "⚡ Apenas uma foto. Se houver conexão mútua no mesmo local, o SINAL avisa."
-            textSize = 12f
-            setTextColor(Color.parseColor("#94A3B8"))
-            setPadding(48, 0, 48, 140)
-            val p = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-            p.gravity = Gravity.BOTTOM or Gravity.START
-            layoutParams = p
-        }
-
-        // Botões de Ação Redondos: X na Esquerda, Coração na Direita
-        val actionsLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            val p = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-            p.gravity = Gravity.BOTTOM
-            p.setMargins(0, 0, 0, 24)
-            layoutParams = p
-        }
-
-        val btnDislike = TextView(this).apply {
-            text = "✕"
-            textSize = 26f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#F43F5E"))
-            gravity = Gravity.CENTER
-            val size = 150
-            layoutParams = LinearLayout.LayoutParams(size, size).apply { setMargins(0, 0, 48, 0) }
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(Color.parseColor("#1E1B4B"))
-                setStroke(3, Color.parseColor("#E11D48"))
-            }
-            setOnClickListener { nextFeedProfile(liked = false) }
-        }
-
-        val btnLike = TextView(this).apply {
-            text = "⚡"
-            textSize = 28f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#10B981"))
-            gravity = Gravity.CENTER
-            val size = 150
-            layoutParams = LinearLayout.LayoutParams(size, size).apply { setMargins(48, 0, 0, 0) }
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(Color.parseColor("#064E3B"))
-                setStroke(3, Color.parseColor("#10B981"))
-            }
-            setOnClickListener { nextFeedProfile(liked = true) }
-        }
-
-        actionsLayout.addView(btnDislike)
-        actionsLayout.addView(btnLike)
-
-        feedPhotoView.addView(photoPlaceholder)
-        feedPhotoView.addView(feedNameText)
-        feedPhotoView.addView(hintText)
-        feedPhotoView.addView(actionsLayout)
-
-        frame.addView(feedPhotoView)
-        return frame
-    }
-
-    private fun nextFeedProfile(liked: Boolean) {
-        if (liked) {
-            Toast.makeText(this, "⚡ Sinal enviado em silêncio.", Toast.LENGTH_SHORT).show()
-        }
-        currentFeedIndex = (currentFeedIndex + 1) % mockFeedProfiles.size
-        feedNameText.text = mockFeedProfiles[currentFeedIndex].first
-    }
-
-    // ==========================================
-    // ABA 2: O RADAR DE PROXIMIDADE (Com Notificação Fixa & Expansão)
-    // ==========================================
-    private fun buildRadarTab(): LinearLayout {
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(40, 48, 40, 20)
-
-            val header = TextView(this@MainActivity).apply {
-                text = "⚡ S I N T O N I A"
-                textSize = 22f
-                typeface = Typeface.DEFAULT_BOLD
-                setTextColor(Color.WHITE)
-                letterSpacing = 0.2f
-                gravity = Gravity.CENTER
-            }
-
-            statusBadge = TextView(this@MainActivity).apply {
-                text = "● RADAR ADORMECIDO"
-                textSize = 11f
-                typeface = Typeface.DEFAULT_BOLD
-                setTextColor(Color.parseColor("#64748B"))
-                gravity = Gravity.CENTER
-                setPadding(28, 10, 28, 10)
-                background = GradientDrawable().apply {
-                    setColor(Color.parseColor("#0E131F"))
-                    cornerRadius = 40f
-                    setStroke(2, Color.parseColor("#1E293B"))
-                }
-                val p = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                p.setMargins(0, 16, 0, 20)
-                layoutParams = p
-            }
-
-            // Radar Central com Anéis Fluídos
-            val radarWrapper = FrameLayout(this@MainActivity).apply {
-                val size = 520
-                layoutParams = LinearLayout.LayoutParams(size, size).apply { setMargins(0, 8, 0, 20) }
-            }
-
-            radarPulseRing = FrameLayout(this@MainActivity).apply {
-                background = GradientDrawable().apply {
-                    shape = GradientDrawable.OVAL
-                    setColor(Color.parseColor("#180D2B"))
-                    setStroke(3, Color.parseColor("#7C3AED"))
-                }
-                alpha = 0.2f
-                layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-            }
-
-            radarCenterCircle = LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER
-                val centerSize = 420
-                layoutParams = FrameLayout.LayoutParams(centerSize, centerSize).apply { gravity = Gravity.CENTER }
-                background = GradientDrawable().apply {
-                    shape = GradientDrawable.OVAL
-                    setColor(Color.parseColor("#0B0F19"))
-                    setStroke(4, Color.parseColor("#334155"))
-                }
-            }
-
-            radarPresenceSubtext = TextView(this@MainActivity).apply {
-                text = "Em silêncio"
-                textSize = 12f
-                setTextColor(Color.parseColor("#94A3B8"))
-                gravity = Gravity.CENTER
-            }
-
-            radarDistanceText = TextView(this@MainActivity).apply {
-                text = "Raio Imediato"
-                textSize = 20f
-                typeface = Typeface.DEFAULT_BOLD
-                setTextColor(Color.WHITE)
-                gravity = Gravity.CENTER
-                setPadding(0, 4, 0, 0)
-            }
-
-            radarCenterCircle.addView(radarPresenceSubtext)
-            radarCenterCircle.addView(radarDistanceText)
-
-            radarWrapper.addView(radarPulseRing)
-            radarWrapper.addView(radarCenterCircle)
-
-            // Botão Principal Arredondado
-            btnToggleRadar = Button(this@MainActivity).apply {
-                text = "SINTONIZAR MEU SINAL"
-                textSize = 14f
-                typeface = Typeface.DEFAULT_BOLD
-                setTextColor(Color.WHITE)
-                setPadding(24, 20, 24, 20)
-                background = GradientDrawable().apply {
-                    setColor(Color.parseColor("#7C3AED"))
-                    cornerRadius = 48f
-                }
-                val p = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                p.setMargins(0, 8, 0, 16)
-                layoutParams = p
-                setOnClickListener {
-                    if (!isRadarActive) startRadar() else stopRadar()
-                }
-            }
-
-            val listHeader = TextView(this@MainActivity).apply {
-                text = "SINAIS QUE CURTIRAM VOCÊ NESTE LOCAL:"
-                textSize = 11f
-                typeface = Typeface.DEFAULT_BOLD
-                setTextColor(Color.parseColor("#64748B"))
-                setPadding(0, 8, 0, 8)
-            }
-
-            signalsListContainer = LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.VERTICAL
-            }
-
-            val scroll = ScrollView(this@MainActivity).apply {
-                addView(signalsListContainer)
-            }
-
-            addView(header)
-            addView(statusBadge)
-            addView(radarWrapper)
-            addView(btnToggleRadar)
-            addView(listHeader)
-            addView(scroll)
-        }
-    }
-
-    // ==========================================
-    // ABA 3: PERFIL (Foto Única, Filtros & Privacidade)
-    // ==========================================
-    private fun buildProfileTab(): ScrollView {
-        val scroll = ScrollView(this)
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(40, 48, 40, 40)
-        }
-
-        val title = TextView(this).apply {
-            text = "MEU PERFIL"
-            textSize = 22f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-        }
-
-        // Avatar com Foto Única
-        val avatar = TextView(this).apply {
-            text = "📷"
-            textSize = 48f
-            gravity = Gravity.CENTER
-            val size = 220
-            layoutParams = LinearLayout.LayoutParams(size, size).apply { setMargins(0, 24, 0, 16) }
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(Color.parseColor("#1E1B4B"))
-                setStroke(4, Color.parseColor("#6366F1"))
-            }
-        }
-
-        val photoHint = TextView(this).apply {
-            text = "Sua única foto visível no SINAL. Sem textos, sem bio."
-            textSize = 12f
-            setTextColor(Color.parseColor("#94A3B8"))
-            gravity = Gravity.CENTER
-            setPadding(0, 0, 0, 32)
-        }
-
-        // Preferência de Gênero
-        val genderLabel = TextView(this).apply {
-            text = "QUEM VOCÊ DESEJA ENCONTRAR:"
-            textSize = 11f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#64748B"))
-        }
-
-        val genderRadioGroup = RadioGroup(this).apply {
-            orientation = RadioGroup.HORIZONTAL
-            setPadding(0, 8, 0, 24)
-        }
-        val rb1 = RadioButton(this).apply { text = "Mulheres"; setTextColor(Color.WHITE); isChecked = true }
-        val rb2 = RadioButton(this).apply { text = "Homens"; setTextColor(Color.WHITE) }
-        val rb3 = RadioButton(this).apply { text = "Todos"; setTextColor(Color.WHITE) }
-        genderRadioGroup.addView(rb1)
-        genderRadioGroup.addView(rb2)
-        genderRadioGroup.addView(rb3)
-
-        // Limite de Distância para o Feed
-        val distanceLabel = TextView(this).apply {
-            text = "RAIO DO FEED: ATÉ 15 KM"
-            textSize = 11f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#64748B"))
-        }
-
-        val distanceSeek = SeekBar(this).apply {
-            max = 50
-            progress = 15
-            setPadding(0, 16, 0, 24)
-        }
-
-        // Opções de Privacidade
-        val privCard = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(24, 20, 24, 20)
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#0F172A"))
-                cornerRadius = 32f
-            }
-            val p = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            p.setMargins(0, 16, 0, 16)
-            layoutParams = p
-        }
-
-        val priv1 = Switch(this).apply {
-            text = "Modo Invisível (Não aparecer no radar de terceiros)"
-            setTextColor(Color.WHITE)
-            textSize = 13f
-        }
-        val priv2 = Switch(this).apply {
-            text = "Apenas conexões mútuas podem me ver"
-            setTextColor(Color.WHITE)
-            textSize = 13f
-            isChecked = true
-        }
-
-        privCard.addView(priv1)
-        privCard.addView(priv2)
-
-        content.addView(title)
-        content.addView(avatar)
-        content.addView(photoHint)
-        content.addView(genderLabel)
-        content.addView(genderRadioGroup)
-        content.addView(distanceLabel)
-        content.addView(distanceSeek)
-        content.addView(privCard)
-
-        scroll.addView(content)
-        return scroll
-    }
-
-    // ==========================================
-    // OVERLAY DE EXPANSÃO SUAVE DA FOTO (Recurso Premium)
-    // ==========================================
-    private fun buildExpandedPhotoOverlay(): FrameLayout {
-        return FrameLayout(this).apply {
-            visibility = View.GONE
-            setBackgroundColor(Color.parseColor("#E605070B")) // Fundo escuro fosco
-            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-            setOnClickListener { collapsePhoto() }
-
-            expandedPhotoCard = LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER
-                setPadding(40, 40, 40, 40)
-                background = GradientDrawable().apply {
-                    setColor(Color.parseColor("#150A21"))
-                    cornerRadius = 64f
-                    setStroke(3, Color.parseColor("#A855F7"))
-                }
-                val p = FrameLayout.LayoutParams(700, 950).apply { gravity = Gravity.CENTER }
-                layoutParams = p
-            }
-
-            expandedPhotoAvatar = TextView(this@MainActivity).apply {
-                text = "✨"
-                textSize = 80f
-                gravity = Gravity.CENTER
-            }
-
-            expandedPhotoInfo = TextView(this@MainActivity).apply {
-                text = "⚡ SINAL DESBLOQUEADO (PREMIUM)\nEsta pessoa está muito próxima de você agora."
-                textSize = 14f
-                setTextColor(Color.WHITE)
-                gravity = Gravity.CENTER
-                setPadding(0, 24, 0, 16)
-            }
-
-            val closeHint = TextView(this@MainActivity).apply {
-                text = "Toque em qualquer lugar para fechar"
-                textSize = 11f
-                setTextColor(Color.parseColor("#94A3B8"))
-                gravity = Gravity.CENTER
-            }
-
-            expandedPhotoCard.addView(expandedPhotoAvatar)
-            expandedPhotoCard.addView(expandedPhotoInfo)
-            expandedPhotoCard.addView(closeHint)
-
-            addView(expandedPhotoCard)
-        }
-    }
-
-    private fun expandPhoto(name: String) {
-        expandedPhotoAvatar.text = "👤"
-        expandedPhotoInfo.text = "⚡ SINAL DESBLOQUEADO (PREMIUM)\n$name está no seu raio imediato agora."
-        expandedPhotoOverlay.visibility = View.VISIBLE
-
-        expandedPhotoCard.scaleX = 0.6f
-        expandedPhotoCard.scaleY = 0.6f
-        expandedPhotoCard.alpha = 0f
-
-        val sx = ObjectAnimator.ofFloat(expandedPhotoCard, View.SCALE_X, 0.6f, 1.0f)
-        val sy = ObjectAnimator.ofFloat(expandedPhotoCard, View.SCALE_Y, 0.6f, 1.0f)
-        val sa = ObjectAnimator.ofFloat(expandedPhotoCard, View.ALPHA, 0f, 1.0f)
-
-        AnimatorSet().apply {
-            playTogether(sx, sy, sa)
-            duration = 300
-            interpolator = DecelerateInterpolator()
-            start()
-        }
-    }
-
-    private fun collapsePhoto() {
-        expandedPhotoOverlay.visibility = View.GONE
-    }
-
-    // ==========================================
-    // BARRA DE NAVEGAÇÃO INFERIOR ESTILO TIKTOK
-    // ==========================================
-    private fun buildBottomNav(): LinearLayout {
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            setBackgroundColor(Color.parseColor("#080C14"))
-            val p = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, 150).apply {
-                gravity = Gravity.BOTTOM
-            }
-            layoutParams = p
-
-            btnNavFeed = TextView(this@MainActivity).apply {
-                text = "🔥 FEED"
-                textSize = 13f
-                typeface = Typeface.DEFAULT_BOLD
-                setTextColor(Color.WHITE)
-                gravity = Gravity.CENTER
-                val lp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
-                layoutParams = lp
-                setOnClickListener { switchTab(0) }
-            }
-
-            btnNavRadar = TextView(this@MainActivity).apply {
-                text = "⚡ SINAL"
-                textSize = 13f
-                typeface = Typeface.DEFAULT_BOLD
-                setTextColor(Color.parseColor("#64748B"))
-                gravity = Gravity.CENTER
-                val lp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
-                layoutParams = lp
-                setOnClickListener { switchTab(1) }
-            }
-
-            btnNavProfile = TextView(this@MainActivity).apply {
-                text = "👤 PERFIL"
-                textSize = 13f
-                typeface = Typeface.DEFAULT_BOLD
-                setTextColor(Color.parseColor("#64748B"))
-                gravity = Gravity.CENTER
-                val lp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
-                layoutParams = lp
-                setOnClickListener { switchTab(2) }
-            }
-
-            addView(btnNavFeed)
-            addView(btnNavRadar)
-            addView(btnNavProfile)
-        }
-    }
-
-    private fun switchTab(tabIndex: Int) {
-        tabFeed.visibility = if (tabIndex == 0) View.VISIBLE else View.GONE
-        tabRadar.visibility = if (tabIndex == 1) View.VISIBLE else View.GONE
-        tabProfile.visibility = if (tabIndex == 2) View.VISIBLE else View.GONE
-
-        btnNavFeed.setTextColor(if (tabIndex == 0) Color.WHITE else Color.parseColor("#64748B"))
-        btnNavRadar.setTextColor(if (tabIndex == 1) Color.WHITE else Color.parseColor("#64748B"))
-        btnNavProfile.setTextColor(if (tabIndex == 2) Color.WHITE else Color.parseColor("#64748B"))
-    }
-
-    // ==========================================
-    // NOTIFICAÇÃO FIXA DE SEGUNDO PLANO
-    // ==========================================
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Canal do SINAL",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "Mantém o SINAL escutando presenças próximas"
-            }
-            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            manager.createNotificationChannel(channel)
-        }
-    }
-
-    private fun showForegroundNotification() {
-        val stopIntent = Intent(this, MainActivity::class.java).apply {
-            action = "ACTION_STOP_RADAR"
-        }
-        val stopPending = PendingIntent.getActivity(
-            this, 0, stopIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val notif = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("⚡ SINAL: Você está sintonizado")
-            .setContentText("Escutando sinais de interesse no seu raio imediato.")
-            .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setOngoing(true)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Desligar Radar", stopPending)
-            .build()
-
-        try {
-            NotificationManagerCompat.from(this).notify(NOTIF_ID, notif)
-        } catch (e: SecurityException) {}
-    }
-
-    private fun cancelForegroundNotification() {
-        NotificationManagerCompat.from(this).cancel(NOTIF_ID)
-    }
-
-    // ==========================================
-    // CONTROLE DO RADAR
-    // ==========================================
-    private fun startRadar() {
-        isRadarActive = true
-        statusBadge.text = "● SINTONIZADO NO AMBIENTE"
-        statusBadge.setTextColor(Color.parseColor("#10B981"))
-        btnToggleRadar.text = "DESLIGAR MEU SINAL"
-        btnToggleRadar.background = GradientDrawable().apply {
-            setColor(Color.parseColor("#1E293B"))
-            cornerRadius = 48f
-        }
-        radarDistanceText.text = "Escutando..."
-        radarPresenceSubtext.text = "Buscando sinais"
-
-        startPulseAnimation()
-        showForegroundNotification()
-
-        // Adiciona sinal de demonstração para testar a expansão no shopping
-        addSignalCard("Pessoa Misteriosa", "Muito próxima de você")
-    }
-
-    private fun stopRadar() {
-        isRadarActive = false
-        stopPulseAnimation()
-        cancelForegroundNotification()
-
-        statusBadge.text = "● RADAR ADORMECIDO"
-        statusBadge.setTextColor(Color.parseColor("#64748B"))
-        btnToggleRadar.text = "SINTONIZAR MEU SINAL"
-        btnToggleRadar.background = GradientDrawable().apply {
-            setColor(Color.parseColor("#7C3AED"))
-            cornerRadius = 48f
-        }
-
-        radarCenterCircle.background = GradientDrawable().apply {
-            shape = GradientDrawable.OVAL
-            setColor(Color.parseColor("#0B0F19"))
-            setStroke(4, Color.parseColor("#334155"))
-        }
-        radarPresenceSubtext.text = "Em silêncio"
-        radarDistanceText.text = "Raio Imediato"
-        signalsListContainer.removeAllViews()
-    }
-
-    private fun addSignalCard(name: String, desc: String) {
-        val card = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(24, 20, 24, 20)
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#131B2E"))
-                cornerRadius = 40f
-                setStroke(2, Color.parseColor("#3B82F6"))
-            }
-            val p = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            p.setMargins(0, 0, 0, 16)
-            layoutParams = p
-            setOnClickListener {
-                if (isPremium) {
-                    expandPhoto(name)
-                } else {
-                    Toast.makeText(this@MainActivity, "Desbloqueie o Premium para ver a foto.", Toast.LENGTH_SHORT).show()
-                }
-            }
-        }
-
-        val avatar = TextView(this).apply {
-            text = "👤"
-            textSize = 28f
-            gravity = Gravity.CENTER
-            val size = 100
-            layoutParams = LinearLayout.LayoutParams(size, size).apply { setMargins(0, 0, 24, 0) }
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(Color.parseColor("#1E1B4B"))
-            }
-        }
-
-        val infoLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-
-        val title = TextView(this).apply {
-            text = "⚡ SINAL DETECTADO"
-            textSize = 13f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#38BDF8"))
-        }
-
-        val subtitle = TextView(this).apply {
-            text = "$name • $desc (Toque para ver)"
-            textSize = 11f
-            setTextColor(Color.parseColor("#CBD5E1"))
-        }
-
-        infoLayout.addView(title)
-        infoLayout.addView(subtitle)
-
-        card.addView(avatar)
-        card.addView(infoLayout)
-
-        signalsListContainer.addView(card)
-
-        // Vibração dupla no bolso
-        val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val timings = longArrayOf(0, 120, 100, 140)
-            val amplitudes = intArrayOf(0, 200, 0, 255)
-            vibrator.vibrate(VibrationEffect.createWaveform(timings, amplitudes, -1))
-        } else {
-            vibrator.vibrate(250)
-        }
-    }
-
-    private fun startPulseAnimation() {
-        val scaleX = PropertyValuesHolder.ofFloat(View.SCALE_X, 1.0f, 1.25f)
-        val scaleY = PropertyValuesHolder.ofFloat(View.SCALE_Y, 1.0f, 1.25f)
-        val alpha = PropertyValuesHolder.ofFloat(View.ALPHA, 0.4f, 0.05f)
-
-        pulseAnimator = ObjectAnimator.ofPropertyValuesHolder(radarPulseRing, scaleX, scaleY, alpha).apply {
-            duration = 1400
-            repeatCount = ValueAnimator.INFINITE
-            repeatMode = ValueAnimator.RESTART
-            start()
-        }
-    }
-
-    private fun stopPulseAnimation() {
-        pulseAnimator?.cancel()
-        radarPulseRing.scaleX = 1.0f
-        radarPulseRing.scaleY = 1.0f
-        radarPulseRing.alpha = 0.2f
+        // 1. Verificação Automática de God Mode:
+        // Se a conta for brainrot064@gmail.com, isGodMode vira TRUE sem precisar de senhas ou cliques manuais
+        checkOwnerStatus()
+
+        createNotificationChannel()
+        setupUI()
+        checkPermissions()
+        startCloudSync()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        stopRadar()
+        feedListener?.remove()
+        modListener?.remove()
+    }
+
+    /**
+     * Validação Automática:
+     * Compara o login com o e-mail do Dono.
+     * Na Play Store, os turistas normais caem em isGodMode = false.
+     */
+    private fun checkOwnerStatus() {
+        val firebaseUser = FirebaseAuth.getInstance().currentUser
+        if (firebaseUser?.email != null) {
+            currentUserEmail = firebaseUser.email!!
+        }
+        isGodMode = currentUserEmail.equals(OWNER_EMAIL, ignoreCase = true)
+        myPhotoStatus = if (isGodMode) "APROVADO (CRIADOR)" else "SEM FOTO"
+    }
+
+    // ==========================================================
+    // SINCRONIZAÇÃO EM TEMPO REAL COM A NUVEM
+    // ==========================================================
+    private fun startCloudSync() {
+        // 1. Escuta fotos aprovadas (para o Feed de todos os celulares)
+        feedListener = firestore.collection("profiles")
+            .whereEqualTo("status", "APROVADO")
+            .addSnapshotListener { snapshot, _ ->
+                if (snapshot == null) return@addSnapshotListener
+                approvedSignals.clear()
+                for (doc in snapshot.documents) {
+                    approvedSignals.add(
+                        SinalPhoto(
+                            id = doc.id,
+                            photoBase64 = doc.getString("photoUrl"),
+                            name = doc.getString("name") ?: "Anônimo",
+                            age = doc.getLong("age")?.toInt() ?: 20,
+                            status = "APROVADO",
+                            isCupid = doc.getBoolean("isCupid") ?: false
+                        )
+                    )
+                }
+                if (currentTab == 0) renderFeedTab()
+            }
+
+        // 2. Se for você (God Mode), escuta a fila de fotos que os usuários enviarem!
+        if (isGodMode) {
+            modListener = firestore.collection("profiles")
+                .whereEqualTo("status", "PENDENTE")
+                .addSnapshotListener { snapshot, _ ->
+                    if (snapshot == null) return@addSnapshotListener
+                    pendingModSignals.clear()
+                    for (doc in snapshot.documents) {
+                        pendingModSignals.add(
+                            SinalPhoto(
+                                id = doc.id,
+                                photoBase64 = doc.getString("photoUrl"),
+                                name = doc.getString("name") ?: "Turista",
+                                age = doc.getLong("age")?.toInt() ?: 20,
+                                status = "PENDENTE"
+                            )
+                        )
+                    }
+                    if (currentTab == 3) renderModerationTab()
+                    updateBottomNavBadges()
+                }
+        }
+    }
+
+    // ==========================================================
+    // UPLOAD DA FOTO (Celular -> Firestore)
+    // ==========================================================
+    private fun uploadPhotoToCloud(uri: Uri) {
+        try {
+            val stream = contentResolver.openInputStream(uri)
+            val original = BitmapFactory.decodeStream(stream)
+            val scaled = Bitmap.createScaledBitmap(original, 480, 640, true)
+            myPhotoBitmap = scaled
+            myPhotoStatus = if (isGodMode) "APROVADO (CRIADOR)" else "PENDENTE"
+
+            val byteStream = ByteArrayOutputStream()
+            scaled.compress(Bitmap.CompressFormat.JPEG, 75, byteStream)
+            val base64Data = "data:image/jpeg;base64," + Base64.encodeToString(byteStream.toByteArray(), Base64.NO_WRAP)
+
+            val profileData = hashMapOf(
+                "id" to myUserId,
+                "name" to if (isGodMode) "⚡ O CUPIDO" else "",
+                "age" to 22,
+                "photoUrl" to base64Data,
+                // O dono é auto-aprovado; turistas comuns entram como PENDENTE na sua moderação
+                "status" to if (isGodMode) "APROVADO" else "PENDENTE",
+                "isCupid" to isGodMode,
+                "bleToken" to "0x" + UUID.randomUUID().toString().substring(0, 6).uppercase(),
+                "ageGroup" to "ADULT",
+                "createdAt" to System.currentTimeMillis()
+            )
+
+            firestore.collection("profiles").document(myUserId).set(profileData)
+                .addOnSuccessListener {
+                    val msg = if (isGodMode) "👑 Foto do Dono atualizada e APROVADA no ar!" else "📸 Foto enviada! Em análise pelo Cupido."
+                    Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                    if (currentTab == 2) renderProfileTab()
+                }
+
+            if (currentTab == 2) renderProfileTab()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Erro: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // ==========================================================
+    // MODERAÇÃO EM 1 TOQUE (EXCLUSIVA DO SEU CELULAR)
+    // ==========================================================
+    private fun approvePhoto(photoId: String) {
+        firestore.collection("profiles").document(photoId)
+            .update("status", "APROVADO")
+            .addOnSuccessListener {
+                Toast.makeText(this, "✅ Foto aprovada! Já está no Feed de todos.", Toast.LENGTH_SHORT).show()
+            }
+    }
+
+    private fun rejectPhoto(photoId: String) {
+        firestore.collection("profiles").document(photoId)
+            .update("status", "RECUSADO")
+            .addOnSuccessListener {
+                Toast.makeText(this, "❌ Foto reprovada e removida.", Toast.LENGTH_SHORT).show()
+            }
+    }
+
+    private fun setupUI() {
+        rootContainer = FrameLayout(this).apply {
+            setBackgroundColor(Color.parseColor("#05070B"))
+        }
+
+        tabContent = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            ).apply { bottomMargin = 170 }
+        }
+
+        navBar = createBottomNav()
+
+        rootContainer.addView(tabContent)
+        rootContainer.addView(navBar)
+        setContentView(rootContainer)
+
+        renderTab(1) // Inicia no Radar
+    }
+
+    private fun renderTab(tabIndex: Int) {
+        currentTab = tabIndex
+        tabContent.removeAllViews()
+
+        when (tabIndex) {
+            0 -> renderFeedTab()
+            1 -> renderRadarTab()
+            2 -> renderProfileTab()
+            3 -> if (isGodMode) renderModerationTab() else renderFeedTab()
+        }
+        updateBottomNavSelection()
+    }
+
+    // ==========================================
+    // ABA 0: FEED DE FOTOS APROVADAS
+    // ==========================================
+    private fun renderFeedTab() {
+        val header = TextView(this).apply {
+            text = if (isGodMode) "⚡ FEED • SINAIS (VISÃO CRIADOR)" else "⚡ SINAIS DISPONÍVEIS NO SHOPPING"
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#A855F7"))
+            gravity = Gravity.CENTER
+            setPadding(0, 48, 0, 24)
+        }
+        tabContent.addView(header)
+
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1.0f
+            ).apply { setMargins(48, 0, 48, 24) }
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#0F172A"))
+                cornerRadius = 36f
+                setStroke(2, if (isGodMode) Color.parseColor("#7E22CE") else Color.parseColor("#334155"))
+            }
+            gravity = Gravity.CENTER
+            setPadding(32, 32, 32, 32)
+        }
+
+        if (approvedSignals.isEmpty()) {
+            val emptyNotice = TextView(this).apply {
+                text = "📡 Procurando sinais no ar...\n\nAssim que o Cupido aprovar novos usuários, as fotos aparecerão aqui instantaneamente."
+                textSize = 14f
+                setTextColor(Color.parseColor("#94A3B8"))
+                gravity = Gravity.CENTER
+                setPadding(32, 64, 32, 64)
+            }
+            card.addView(emptyNotice)
+        } else {
+            val signal = approvedSignals[currentFeedIndex % approvedSignals.size]
+
+            val photoView = ImageView(this).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, 0, 1.0f
+                ).apply { bottomMargin = 20 }
+                scaleType = ImageView.ScaleType.CENTER_CROP
+
+                if (signal.photoBase64 != null && signal.photoBase64.contains(",")) {
+                    try {
+                        val pure = signal.photoBase64.substringAfter(",")
+                        val bytes = Base64.decode(pure, Base64.DEFAULT)
+                        setImageBitmap(BitmapFactory.decodeByteArray(bytes, 0, bytes.size))
+                    } catch (e: Exception) {
+                        setBackgroundColor(Color.parseColor("#1E293B"))
+                    }
+                } else {
+                    setBackgroundColor(Color.parseColor("#1E293B"))
+                }
+            }
+            card.addView(photoView)
+
+            val badge = TextView(this).apply {
+                text = if (signal.isCupid) "👑 O CUPIDO • DONO DO APP" else "⚡ SINAL ATIVO NO SHOPPING"
+                textSize = 11f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(if (signal.isCupid) Color.parseColor("#FBBF24") else Color.parseColor("#38BDF8"))
+                gravity = Gravity.CENTER
+                setPadding(16, 4, 16, 4)
+                background = GradientDrawable().apply {
+                    setColor(if (signal.isCupid) Color.parseColor("#78350F") else Color.parseColor("#0C4A6E"))
+                    cornerRadius = 16f
+                }
+            }
+            card.addView(badge)
+
+            val actionRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                setPadding(0, 16, 0, 0)
+            }
+
+            val passBtn = Button(this).apply {
+                text = "✕"
+                textSize = 22f
+                setTextColor(Color.parseColor("#94A3B8"))
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(Color.parseColor("#1E293B"))
+                }
+                layoutParams = LinearLayout.LayoutParams(140, 140).apply { rightMargin = 40 }
+                setOnClickListener {
+                    currentFeedIndex++
+                    renderFeedTab()
+                }
+            }
+
+            val sparkBtn = Button(this).apply {
+                text = "⚡"
+                textSize = 26f
+                setTextColor(Color.WHITE)
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(Color.parseColor("#9333EA"))
+                }
+                layoutParams = LinearLayout.LayoutParams(160, 160)
+                setOnClickListener {
+                    Toast.makeText(this@MainActivity, "⚡ Sintonia enviada! Se cruzarem caminho, o radar vai vibrar.", Toast.LENGTH_SHORT).show()
+                    currentFeedIndex++
+                    renderFeedTab()
+                }
+            }
+
+            actionRow.addView(passBtn)
+            actionRow.addView(sparkBtn)
+            card.addView(actionRow)
+        }
+
+        tabContent.addView(card)
+    }
+
+    // ==========================================
+    // ABA 1: RADAR DE SINTONIA
+    // ==========================================
+    private fun renderRadarTab() {
+        val title = TextView(this).apply {
+            text = if (isGodMode) "👑 RADAR MESTRE • GOD MODE" else "RADAR DE SINTONIA PRESENCIAL"
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(if (isGodMode) Color.parseColor("#FBBF24") else Color.parseColor("#C084FC"))
+            gravity = Gravity.CENTER
+            setPadding(0, 60, 0, 16)
+        }
+        tabContent.addView(title)
+
+        val radarCircleView = FrameLayout(this).apply {
+            val size = 500
+            layoutParams = LinearLayout.LayoutParams(size, size).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                topMargin = 30
+                bottomMargin = 30
+            }
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#090D16"))
+                setStroke(4, if (isGodMode) Color.parseColor("#F59E0B") else Color.parseColor("#581C87"))
+            }
+        }
+
+        val centerIcon = TextView(this).apply {
+            text = if (isRadarActive) (if (isGodMode) "👑" else "⚡") else "📡"
+            textSize = 46f
+            gravity = Gravity.CENTER
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        }
+        radarCircleView.addView(centerIcon)
+        tabContent.addView(radarCircleView)
+
+        val statusText = TextView(this).apply {
+            text = if (isRadarActive) {
+                if (isGodMode) "SINTONIA MESTRE ATIVA (ALCANCE MÁXIMO)" else "SINTONIZANDO NO SHOPPING"
+            } else {
+                "RADAR EM REPOUSO"
+            }
+            textSize = 17f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(if (isRadarActive) Color.parseColor("#34D399") else Color.WHITE)
+            gravity = Gravity.CENTER
+            setPadding(0, 16, 0, 8)
+        }
+        tabContent.addView(statusText)
+
+        val actionBtn = Button(this).apply {
+            text = if (isRadarActive) "PARAR RADAR" else "LIGAR RADAR BLE"
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+            background = GradientDrawable().apply {
+                cornerRadius = 48f
+                setColor(if (isRadarActive) Color.parseColor("#DC2626") else Color.parseColor("#7E22CE"))
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 130
+            ).apply { setMargins(90, 20, 90, 16) }
+            setOnClickListener {
+                isRadarActive = !isRadarActive
+                if (isRadarActive) {
+                    showPersistentForegroundNotification()
+                    Toast.makeText(this@MainActivity, "⚡ Radar Ativo! Celular vibrará no bolso ao cruzar sintonia.", Toast.LENGTH_SHORT).show()
+                } else {
+                    val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                    nm.cancel(1001)
+                }
+                renderTab(1)
+            }
+        }
+        tabContent.addView(actionBtn)
+
+        val testVibeBtn = Button(this).apply {
+            text = "🎯 Testar Vibração no Bolso (Tum-tum)"
+            textSize = 12f
+            setTextColor(Color.parseColor("#A855F7"))
+            background = GradientDrawable().apply {
+                cornerRadius = 24f
+                setColor(Color.parseColor("#1E1B4B"))
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                topMargin = 16
+            }
+            setOnClickListener {
+                triggerHeartbeatVibration()
+                showMysteryNotification()
+            }
+        }
+        tabContent.addView(testVibeBtn)
+    }
+
+    // ==========================================
+    // ABA 2: PERFIL DO USUÁRIO
+    // ==========================================
+    private fun renderProfileTab() {
+        val title = TextView(this).apply {
+            text = if (isGodMode) "👑 MEU SINAL (PERFIL DO CRIADOR)" else "MEU SINAL"
+            textSize = 16f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(if (isGodMode) Color.parseColor("#FBBF24") else Color.WHITE)
+            gravity = Gravity.CENTER
+            setPadding(0, 48, 0, 24)
+        }
+        tabContent.addView(title)
+
+        val avatarContainer = FrameLayout(this).apply {
+            val size = 260
+            layoutParams = LinearLayout.LayoutParams(size, size).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                bottomMargin = 24
+            }
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#1E293B"))
+                setStroke(4, if (isGodMode) Color.parseColor("#F59E0B") else Color.parseColor("#7E22CE"))
+            }
+        }
+
+        val avatarView = ImageView(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+            if (myPhotoBitmap != null) {
+                setImageBitmap(myPhotoBitmap)
+                scaleType = ImageView.ScaleType.CENTER_CROP
+            }
+        }
+        avatarContainer.addView(avatarView)
+        tabContent.addView(avatarContainer)
+
+        val statusBadge = TextView(this).apply {
+            text = if (isGodMode) "CONTA OFICIAL: $OWNER_EMAIL (GOD MODE)" else "STATUS DA SUA FOTO: $myPhotoStatus"
+            textSize = 11f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(if (isGodMode || myPhotoStatus.contains("APROV")) Color.parseColor("#10B981") else Color.parseColor("#F59E0B"))
+            gravity = Gravity.CENTER
+            setPadding(24, 6, 24, 6)
+            background = GradientDrawable().apply {
+                setColor(if (isGodMode) Color.parseColor("#064E3B") else Color.parseColor("#78350F"))
+                cornerRadius = 20f
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                bottomMargin = 24
+            }
+        }
+        tabContent.addView(statusBadge)
+
+        val uploadBtn = Button(this).apply {
+            text = if (isGodMode) "📸 Trocar Foto Oficial do Cupido" else "📁 Escolher Minha Foto da Galeria"
+            textSize = 13f
+            setTextColor(Color.WHITE)
+            background = GradientDrawable().apply {
+                cornerRadius = 24f
+                setColor(if (isGodMode) Color.parseColor("#D97706") else Color.parseColor("#7E22CE"))
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 120
+            ).apply { setMargins(64, 0, 64, 16) }
+            setOnClickListener {
+                pickPhotoLauncher.launch("image/*")
+            }
+        }
+        tabContent.addView(uploadBtn)
+
+        // Seletor de Simulação para Teste (Permite ver exatamente como um turista vê)
+        val simulateBtn = Button(this).apply {
+            text = if (isGodMode) "🔄 Simular Visão de Usuário Comum" else "👑 Ativar Visão do Criador ($OWNER_EMAIL)"
+            textSize = 11f
+            setTextColor(Color.parseColor("#94A3B8"))
+            background = GradientDrawable().apply {
+                cornerRadius = 20f
+                setColor(Color.parseColor("#0F172A"))
+                setStroke(1, Color.parseColor("#334155"))
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                topMargin = 16
+            }
+            setOnClickListener {
+                currentUserEmail = if (isGodMode) "turista_caldas@gmail.com" else OWNER_EMAIL
+                checkOwnerStatus()
+                rootContainer.removeView(navBar)
+                navBar = createBottomNav()
+                rootContainer.addView(navBar)
+                renderProfileTab()
+                Toast.makeText(
+                    this@MainActivity,
+                    if (isGodMode) "👑 Modo Criador Ativado!" else "👤 Modo Turista Ativado (Aba Mod ocultada)!",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+        tabContent.addView(simulateBtn)
+    }
+
+    // ==========================================================
+    // ABA 3: SALA DE TRIAGEM (SÓ APARECE NO CELULAR DO DONO)
+    // ==========================================================
+    private fun renderModerationTab() {
+        val title = TextView(this).apply {
+            text = "👑 SALA DE TRIAGEM DO DONO"
+            textSize = 16f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#FBBF24"))
+            gravity = Gravity.CENTER
+            setPadding(0, 48, 0, 8)
+        }
+        tabContent.addView(title)
+
+        val subtitle = TextView(this).apply {
+            text = "${pendingModSignals.size} foto(s) de turistas aguardando sua bênção"
+            textSize = 12f
+            setTextColor(Color.parseColor("#94A3B8"))
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, 24)
+        }
+        tabContent.addView(subtitle)
+
+        if (pendingModSignals.isEmpty()) {
+            val emptyBox = TextView(this).apply {
+                text = "✨ Nenhuma foto pendente no momento!\n\nQuando alguém no shopping subir uma foto pelo app, ela vai pipocar aqui na hora para você aprovar."
+                textSize = 13f
+                setTextColor(Color.parseColor("#64748B"))
+                gravity = Gravity.CENTER
+                setPadding(48, 64, 48, 64)
+            }
+            tabContent.addView(emptyBox)
+            return
+        }
+
+        val scrollView = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1.0f
+            )
+        }
+
+        val listContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(32, 0, 32, 24)
+        }
+
+        for (item in pendingModSignals) {
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#0F172A"))
+                    cornerRadius = 24f
+                    setStroke(2, Color.parseColor("#F59E0B"))
+                }
+                setPadding(24, 20, 24, 20)
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = 24 }
+            }
+
+            if (item.photoBase64 != null && item.photoBase64.contains(",")) {
+                val photo = ImageView(this).apply {
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, 400
+                    ).apply { bottomMargin = 16 }
+                    scaleType = ImageView.ScaleType.CENTER_CROP
+                    try {
+                        val pure = item.photoBase64.substringAfter(",")
+                        val bytes = Base64.decode(pure, Base64.DEFAULT)
+                        setImageBitmap(BitmapFactory.decodeByteArray(bytes, 0, bytes.size))
+                    } catch (e: Exception) {}
+                }
+                card.addView(photo)
+            }
+
+            val cardTitle = TextView(this).apply {
+                text = "${item.name} (${item.age} anos)"
+                textSize = 14f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(Color.WHITE)
+            }
+            card.addView(cardTitle)
+
+            val btnRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, 16, 0, 0)
+            }
+
+            val approveBtn = Button(this).apply {
+                text = "Aprovar ✅"
+                textSize = 13f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(Color.WHITE)
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#059669"))
+                    cornerRadius = 16f
+                }
+                layoutParams = LinearLayout.LayoutParams(0, 110, 1.0f).apply { rightMargin = 12 }
+                setOnClickListener {
+                    approvePhoto(item.id)
+                }
+            }
+
+            val rejectBtn = Button(this).apply {
+                text = "Recusar ❌"
+                textSize = 13f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(Color.WHITE)
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#DC2626"))
+                    cornerRadius = 16f
+                }
+                layoutParams = LinearLayout.LayoutParams(0, 110, 1.0f)
+                setOnClickListener {
+                    rejectPhoto(item.id)
+                }
+            }
+
+            btnRow.addView(approveBtn)
+            btnRow.addView(rejectBtn)
+            card.addView(btnRow)
+            listContainer.addView(card)
+        }
+
+        scrollView.addView(listContainer)
+        tabContent.addView(scrollView)
+    }
+
+    // ==========================================
+    // BARRA INFERIOR DE NAVEGAÇÃO
+    // ==========================================
+    private fun createBottomNav(): LinearLayout {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, 160
+            ).apply { gravity = Gravity.BOTTOM }
+            setBackgroundColor(Color.parseColor("#090D16"))
+
+            addView(createNavButton("🔥 Feed", 0))
+            addView(createNavButton("⚡ Radar", 1))
+            addView(createNavButton("👤 Perfil", 2))
+
+            // ABA EXCLUSIVA DO DONO (Invisível para qualquer usuário da Play Store)
+            if (isGodMode) {
+                val count = pendingModSignals.size
+                val label = if (count > 0) "👑 Mod ($count)" else "👑 Mod"
+                addView(createNavButton(label, 3))
+            }
+        }
+    }
+
+    private fun createNavButton(label: String, index: Int): TextView {
+        return TextView(this).apply {
+            text = label
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setTextColor(if (currentTab == index) Color.parseColor("#C084FC") else Color.parseColor("#64748B"))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.0f)
+            setOnClickListener { renderTab(index) }
+        }
+    }
+
+    private fun updateBottomNavSelection() {
+        for (i in 0 until navBar.childCount) {
+            val v = navBar.getChildAt(i) as? TextView
+            v?.setTextColor(if (i == currentTab) Color.parseColor("#C084FC") else Color.parseColor("#64748B"))
+        }
+    }
+
+    private fun updateBottomNavBadges() {
+        if (isGodMode && navBar.childCount >= 4) {
+            val modBtn = navBar.getChildAt(3) as? TextView
+            val count = pendingModSignals.size
+            modBtn?.text = if (count > 0) "👑 Mod ($count)" else "👑 Mod"
+        }
+    }
+
+    private fun triggerHeartbeatVibration() {
+        val pattern = longArrayOf(0, 120, 150, 180)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val vm = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+            vm.defaultVibrator.vibrate(VibrationEffect.createWaveform(pattern, -1))
+        } else {
+            @Suppress("DEPRECATION")
+            val v = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+            v.vibrate(pattern, -1)
+        }
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val ch = NotificationChannel("sinal_alerts", "Alertas SINAL", NotificationManager.IMPORTANCE_HIGH).apply {
+                enableVibration(true)
+            }
+            getSystemService(NotificationManager::class.java).createNotificationChannel(ch)
+        }
+    }
+
+    private fun showPersistentForegroundNotification() {
+        val notif = NotificationCompat.Builder(this, "sinal_alerts")
+            .setContentTitle("⚡ SINAL Ativo em Segundo Plano")
+            .setContentText("Escutando frequências no shopping...")
+            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .build()
+        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(1001, notif)
+    }
+
+    private fun showMysteryNotification() {
+        val notif = NotificationCompat.Builder(this, "sinal_alerts")
+            .setContentTitle("⚡ SINAL DETECTADO!")
+            .setContentText("Alguém com quem você tem sintonia está no seu raio físico agora.")
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setAutoCancel(true)
+            .build()
+        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(2002, notif)
+    }
+
+    private fun checkPermissions() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val needed = mutableListOf<String>()
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
+                needed.add(Manifest.permission.BLUETOOTH_SCAN)
+            }
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_ADVERTISE) != PackageManager.PERMISSION_GRANTED) {
+                needed.add(Manifest.permission.BLUETOOTH_ADVERTISE)
+            }
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                needed.add(Manifest.permission.BLUETOOTH_CONNECT)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                    needed.add(Manifest.permission.POST_NOTIFICATIONS)
+                }
+            }
+            if (needed.isNotEmpty()) {
+                ActivityCompat.requestPermissions(this, needed.toTypedArray(), 101)
+            }
+        }
     }
 }
